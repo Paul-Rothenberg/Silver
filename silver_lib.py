@@ -2,22 +2,33 @@ from pathlib import Path
 import xarray as xr
 import cv2 as cv
 import numpy as np
+import mounttree as mnt
 
 
-def generate_pic_pair_vids(Velox_NetCDF_File):
+def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
     '''
     Function that generates image pairs from Velox brightness temperature data. The image pairs are each one second
     apart and are saved as grayscale videos in the vids_tmp folder.
 
-    :param Velox_NetCDF_File: Path to Velox NetCDF File
-    :return pic_pair_vids_list: List of Paths from image pair videos
+    :param Velox_BT_File: Path to Velox NetCDF file containing the brightness temperatures
+    :return: List of Paths from image pair videos
     '''
     Path('vids_tmp').mkdir(exist_ok=True)
     pic_pair_vids_list = []
-    velox_data = xr.open_dataset(Velox_NetCDF_File)
+    velox_data = xr.open_dataset(Velox_BT_File)
     time = velox_data['time']
     BT_2D = velox_data['BT_2D']
-    vid_size = np.shape(BT_2D)[1:]
+    # Removing pixel rows or columns if the number of pixels is odd. Data is removed from the edges with the smaller
+    # vid_edge_trim.
+    BT_2D = BT_2D.isel({'y': range((vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0),
+                                   640-sum(vid_edge_trim[1::2])-
+                                   (vid_edge_trim[3]>vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)),
+                        'x': range((vid_edge_trim[0]>vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
+                                   512-sum(vid_edge_trim[0::2])-
+                                   (vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0))})
+    # trims the edges to an even number of pixels so that no resampling takes place during video generation
+    vid_size = (640-sum(vid_edge_trim[1::2])-(sum(vid_edge_trim[1::2])%2!=0),
+                512-sum(vid_edge_trim[0::2])-(sum(vid_edge_trim[0::2])%2!=0))
     for t in range(len(time)-1):
         if time[t+1]-time[t] == np.timedelta64(1, 's'):
             vid_output = cv.VideoWriter('vids_tmp/'+str(time[t].values)+'.avi',
@@ -43,7 +54,7 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
     quality of the point pairs by a backward calculation of the optical flow, returning only high quality points.
 
     :param pic_pair_vids_list: List of Paths from image pair videos
-    :return pixel_pairs_list: List of Arrays containing the image point pairs in pixel units
+    :return: List of Arrays containing the image point pairs in pixel units
     '''
     pixel_pairs_list = []
     for pic_pair_vid in pic_pair_vids_list:
@@ -84,3 +95,112 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
             pixel_pairs = None
         pixel_pairs_list.append(pixel_pairs)
     return pixel_pairs_list
+
+
+def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
+    '''
+    This function translates an array of pixel position pairs into an array of viewing direction vectors. First, it
+    calculates how the calibration data set is positioned in relation to the brightness temperature data set. Then a
+    decision is made as if the zenith and azimuth angle of a point needs to be interpolated. This is the case if the
+    point does not lie directly on a pixel. For interpolation, a weighted average is calculated from the four
+    surrounding pixels. The distance is included linearly in the weights, whereby the influence decreases to zero over a
+    distance of one pixel. In the next step, the viewing direction vector is calculated from the zenith and azimuth
+    angle found. If there are no four surrounding pixels during the interpolation, a None vector is added. This is only
+    the case if the point lies between the center of an edge pixel and the absolute edge of the image and the trim of
+    this side is zero. In the form used, OpenCV should never output such values when calculating the optical flow, as
+    edges are difficult to evaluate. But hope ain't a tactic. If the translated array contains None vectors, the entire
+    pixel point pair is deleted and only valid vectors are returned.
+
+    :param pixel_pairs: array containing the pixel point pairs of consecutive images
+    :param Velox_VDC_Data: Velox calibration file which assigns a viewing direction to each pixel in the camera
+                           reference frame
+    :param vid_edge_trim: list specifying how the brightness temperature data set was trimmed in respect to the raw data
+    :return: array which contains the translated viewing vectors in the camera reference frame
+    '''
+    # trimming the calibration data set to the video size
+    real_vid_edge_trim = [vid_edge_trim[0]+(vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
+                          vid_edge_trim[1]+(vid_edge_trim[1]<vid_edge_trim[3] and sum(vid_edge_trim[1::2])%2!=0),
+                          vid_edge_trim[2]+(vid_edge_trim[2]<vid_edge_trim[0] and sum(vid_edge_trim[0::2])%2!=0),
+                          vid_edge_trim[3]+(vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)]
+    real_vid_edge_trim = [0,0,0,0] # ToDo: Remove when correct calibration data is ready
+    Velox_VDC_Data = Velox_VDC_Data.assign_coords({'x-pixel': range(0-real_vid_edge_trim[3],
+                                                                    640-real_vid_edge_trim[3]-5), # ToDo: Remove -5 when correct calibration data is ready
+                                                   'y-pixel': range(0-real_vid_edge_trim[0],
+                                                                    512-real_vid_edge_trim[0]-5)})# ToDo: Remove -5 when correct calibration data is ready
+    zenith = Velox_VDC_Data['zenith']
+    azimuth = Velox_VDC_Data['azimuth']
+
+    VD_Vector_storage = []
+    for pixel in pixel_pairs.reshape(-1,2):
+        if pixel[0]%1 == 0 and pixel[1]%1 == 0:
+            x = int(pixel[0])+real_vid_edge_trim[3]
+            y = int(pixel[1])+real_vid_edge_trim[0]
+            z = zenith[x][y].values*np.pi/180
+            a = azimuth[x][y].values*np.pi/180
+            VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
+            VD_Vector_storage.append(VD_Vector)
+        else:
+            x0 = int(np.floor(pixel[0]))+real_vid_edge_trim[3]
+            y0 = int(np.floor(pixel[1]))+real_vid_edge_trim[0]
+            z_patch = zenith[x0:x0+2].T[y0:y0+2].T.values
+            a_patch = azimuth[x0:x0+2].T[y0:y0+2].T.values
+            if z_patch.shape != (2, 2) or a_patch.shape != (2, 2):
+                VD_Vector_storage.append((None, None, None))
+                continue
+            d = np.array([[((pixel[0]-x0)**2+(pixel[1]-y0)**2)**0.5,
+                           ((pixel[0]-x0)**2+(1-pixel[1]+y0)**2)**0.5],
+                          [((1-pixel[0]+x0)**2+(pixel[1]-y0)**2)**0.5,
+                           ((1-pixel[0]+x0)**2+(1-pixel[1]+y0)**2)**0.5]])
+            w = np.vectorize(lambda x: max(0, 1-x), otypes=[float])(d)
+            w = w/np.sum(w)
+            z = np.sum(z_patch*w)
+            a = np.sum(a_patch*w)
+            VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
+            VD_Vector_storage.append(VD_Vector)
+    VD_Vector_array = np.array(VD_Vector_storage).reshape(-1,2,3)
+    VD_Vector_clean = np.delete(VD_Vector_array, np.unique(np.where(VD_Vector_array == None)[0]), 0)
+    return VD_Vector_clean
+
+
+def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
+                                 vid_edge_trim):
+    coordinate_systems = mnt.load_mounttree(MNT_File)
+    Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
+    HALO_IRS_Data = xr.open_dataset(HALO_IRS_File)
+    IRS_TIME = HALO_IRS_Data['time']    # time
+    IRS_LAT = HALO_IRS_Data['IRS_LAT'] # Latitude
+    IRS_LON = HALO_IRS_Data['IRS_LON'] # Longitude
+    IRS_ALT = HALO_IRS_Data['IRS_ALT'] # Altitude
+    IRS_PHI = HALO_IRS_Data['IRS_PHI'] # Roll
+    IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
+    IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
+
+    for vid in range(len(pic_pair_vids_list)-56): # ToDo: Remove -56
+        vid_time = pic_pair_vids_list[vid][-33:-4]
+        time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
+        coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
+                                  roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index])
+        EARTH_frame = coordinate_systems.get_frame('EARTH')
+        VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
+        P1E = VE_transformation.apply_point(0, 0, 0)
+        coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
+                                  roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
+        VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
+        P2E = VE_transformation.apply_point(0, 0, 0)
+        PrefE = [(a+b)/2 for a, b in zip(P1E, P2E)]
+        PrefE_N = EARTH_frame.toNatural(PrefE)
+        ref_lat, ref_lon, ref_height = PrefE_N
+
+        view_vectors = viewing_direction(pixel_pairs_list[vid], Velox_VDC_Data, vid_edge_trim)
+
+        coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
+                                  roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index],
+                                  ref_lat=ref_lat, ref_lon=ref_lon, ref_height=ref_height)
+        VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
+        P1 = VS_transformation.apply_point(0, 0, 0)
+
+        coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
+                                  roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
+        VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
+        P2 = VS_transformation.apply_point(0, 0, 0)
+    return None

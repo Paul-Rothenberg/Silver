@@ -1,0 +1,21 @@
+description:
+  name: VELOX
+
+mounttree:
+  framename: EARTH
+  framespec: WGS-84
+  subframes:
+    - framename: local horizon
+      position: [ lat, lon, height ]
+      rotation: [ 0, 0, 0 ]
+      subframes:
+        - framename: HALO
+          position: [ 0, 0, 0 ]
+          rotation: [ roll, pitch, yaw ]
+          subframes:
+            - framename: VELOX
+              position: [ 0, 0, 0 ]
+              rotation: [ 0, 0, 0 ]
+    - framename: Stereo
+      position: [ref_lat, ref_lon, ref_height]
+      rotation: [ 0, 0, 0 ]

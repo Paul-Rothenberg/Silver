@@ -1,6 +1,8 @@
-from silver_lib import generate_pic_pair_vids, cloud_point_pixel_pairs
-from namelist import Velox_NetCDF_File
+from silver_lib import generate_pic_pair_vids, cloud_point_pixel_pairs, stereographic_reconstruction
+from namelist import Velox_BT_File, Velox_VDC_File, HALO_IRS_File, MNT_File, vid_edge_trim
 
 if __name__ == '__main__':
-    pic_pair_vids_list = generate_pic_pair_vids(Velox_NetCDF_File)
+    pic_pair_vids_list = generate_pic_pair_vids(Velox_BT_File, vid_edge_trim)
     pixel_pairs_list = cloud_point_pixel_pairs(pic_pair_vids_list)
+    cloud_points = stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File,
+                                                MNT_File, vid_edge_trim)
