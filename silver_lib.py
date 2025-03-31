@@ -107,9 +107,8 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     distance of one pixel. In the next step, the viewing direction vector is calculated from the zenith and azimuth
     angle found. If there are no four surrounding pixels during the interpolation, a None vector is added. This is only
     the case if the point lies between the center of an edge pixel and the absolute edge of the image and the trim of
-    this side is zero. In the form used, OpenCV should never output such values when calculating the optical flow, as
-    edges are difficult to evaluate. But hope ain't a tactic. If the translated array contains None vectors, the entire
-    pixel point pair is deleted and only valid vectors are returned.
+    this side is zero. If the translated array contains None vectors, the entire pixel point pair is deleted and only
+    valid vectors are returned.
 
     :param pixel_pairs: array containing the pixel point pairs of consecutive images
     :param Velox_VDC_Data: Velox calibration file which assigns a viewing direction to each pixel in the camera
@@ -123,6 +122,7 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
                           vid_edge_trim[2]+(vid_edge_trim[2]<vid_edge_trim[0] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[3]+(vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)]
     real_vid_edge_trim = [0,0,0,0] # ToDo: Remove when correct calibration data is ready
+    # This line is used for debugging purposes only. Data is not selected by using coordinates but by indices.
     Velox_VDC_Data = Velox_VDC_Data.assign_coords({'x-pixel': range(0-real_vid_edge_trim[3],
                                                                     640-real_vid_edge_trim[3]-5), # ToDo: Remove -5 when correct calibration data is ready
                                                    'y-pixel': range(0-real_vid_edge_trim[0],
@@ -142,11 +142,16 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
         else:
             x0 = int(np.floor(pixel[0]))+real_vid_edge_trim[3]
             y0 = int(np.floor(pixel[1]))+real_vid_edge_trim[0]
-            z_patch = zenith[x0:x0+2].T[y0:y0+2].T.values
-            a_patch = azimuth[x0:x0+2].T[y0:y0+2].T.values
+            if x0 < 0 or y0 < 0:
+                VD_Vector_storage.append((None, None, None))
+                continue
+            z_patch = zenith[x0:x0+2].T[y0:y0+2].T
+            a_patch = azimuth[x0:x0+2].T[y0:y0+2].T
             if z_patch.shape != (2, 2) or a_patch.shape != (2, 2):
                 VD_Vector_storage.append((None, None, None))
                 continue
+            z_patch = z_patch.values
+            a_patch = a_patch.values
             d = np.array([[((pixel[0]-x0)**2+(pixel[1]-y0)**2)**0.5,
                            ((pixel[0]-x0)**2+(1-pixel[1]+y0)**2)**0.5],
                           [((1-pixel[0]+x0)**2+(pixel[1]-y0)**2)**0.5,
@@ -158,7 +163,8 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
             VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
             VD_Vector_storage.append(VD_Vector)
     VD_Vector_array = np.array(VD_Vector_storage).reshape(-1,2,3)
-    VD_Vector_clean = np.delete(VD_Vector_array, np.unique(np.where(VD_Vector_array == None)[0]), 0)
+    VD_Vector_clean = (np.delete(VD_Vector_array, np.unique(np.where(VD_Vector_array == None)[0]), 0)
+                       .astype(np.float64))
     return VD_Vector_clean
 
 
@@ -178,9 +184,13 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     for vid in range(len(pic_pair_vids_list)-56): # ToDo: Remove -56
         vid_time = pic_pair_vids_list[vid][-33:-4]
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
+        # reconstruction doesn't work if P1=P2
+        if (IRS_LAT[time_index] == IRS_LAT[time_index+1] and IRS_LON[time_index] == IRS_LON[time_index+1] and
+                IRS_ALT[time_index] == IRS_ALT[time_index+1]):
+            continue
+        EARTH_frame = coordinate_systems.get_frame('EARTH')
         coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
                                   roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index])
-        EARTH_frame = coordinate_systems.get_frame('EARTH')
         VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
         P1E = VE_transformation.apply_point(0, 0, 0)
         coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
@@ -191,16 +201,39 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         PrefE_N = EARTH_frame.toNatural(PrefE)
         ref_lat, ref_lon, ref_height = PrefE_N
 
+        if np.array_equal(pixel_pairs_list[vid], None):
+            continue # ToDo: adapting behavior depending on data storage
         view_vectors = viewing_direction(pixel_pairs_list[vid], Velox_VDC_Data, vid_edge_trim)
+        if view_vectors.shape == (0, 2, 3):
+            continue # ToDo: adapting behavior depending on data storage
 
         coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
                                   roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index],
                                   ref_lat=ref_lat, ref_lon=ref_lon, ref_height=ref_height)
         VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
-        P1 = VS_transformation.apply_point(0, 0, 0)
+        P1 = np.array(VS_transformation.apply_point(0, 0, 0))
+        VV1 = np.stack(VS_transformation.apply_direction(*view_vectors[:,0,:].T)).T
 
         coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
                                   roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
         VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
-        P2 = VS_transformation.apply_point(0, 0, 0)
+        P2 = np.array(VS_transformation.apply_point(0, 0, 0))
+        VV2 = np.stack(VS_transformation.apply_direction(*view_vectors[:, 1, :].T)).T
+
+        VV = np.stack((VV1, VV2), axis=1)
+        Pcs_storage = []
+        for vec_pair in VV:
+            if np.array_equal(np.cross(vec_pair[0], vec_pair[1]), np.array([0, 0, 0])):
+                continue
+            dot = np.dot(vec_pair[0], vec_pair[1])
+            M1 = P1 + np.dot(P2-P1, vec_pair[0]-vec_pair[1]*dot)/(1-dot**2) * vec_pair[0]
+            M2 = P2 + np.dot(P2-P1, vec_pair[0]*dot-vec_pair[1])/(1-dot**2) * vec_pair[1]
+            Pcs = (M1+M2)/2
+            Pcs_storage.append(Pcs)
+        SE_transformation = coordinate_systems.get_transformation('Stereo', 'EARTH')
+        Pcs_storage = np.array(Pcs_storage)
+        Pcs_storage = np.stack(SE_transformation.apply_point(*Pcs_storage.T)).T
+        Pcs_storage = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storage])
+        np.set_printoptions(suppress=True)
+        print(Pcs_storage)
     return None
