@@ -150,16 +150,18 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
             if z_patch.shape != (2, 2) or a_patch.shape != (2, 2):
                 VD_Vector_storage.append((None, None, None))
                 continue
-            z_patch = z_patch.values
-            a_patch = a_patch.values
+            z_patch = z_patch.values*np.pi/180
+            a_patch = a_patch.values*np.pi/180
             d = np.array([[((pixel[0]-x0)**2+(pixel[1]-y0)**2)**0.5,
                            ((pixel[0]-x0)**2+(1-pixel[1]+y0)**2)**0.5],
                           [((1-pixel[0]+x0)**2+(pixel[1]-y0)**2)**0.5,
                            ((1-pixel[0]+x0)**2+(1-pixel[1]+y0)**2)**0.5]])
             w = np.vectorize(lambda x: max(0, 1-x), otypes=[float])(d)
             w = w/np.sum(w)
+            # circularity consideration of the zenith angle data not necessary since the breakpoint is behind the camera
             z = np.sum(z_patch*w)
-            a = np.sum(a_patch*w)
+            # circularity consideration of the azimuth angle data
+            a = np.arctan2(np.sum(np.sin(a_patch)*w), np.sum(np.cos(a_patch)*w))
             VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
             VD_Vector_storage.append(VD_Vector)
     VD_Vector_array = np.array(VD_Vector_storage).reshape(-1,2,3)
