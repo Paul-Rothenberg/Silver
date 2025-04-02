@@ -183,7 +183,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
 
-    for vid in range(len(pic_pair_vids_list)-56): # ToDo: Remove -56
+    for vid in range(len(pic_pair_vids_list)): # ToDo: Remove -56
         vid_time = pic_pair_vids_list[vid][-33:-4]
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
         # reconstruction doesn't work if P1=P2
@@ -225,11 +225,11 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         VV = np.stack((VV1, VV2), axis=1)
         Pcs_storage = []
         for vec_pair in VV:
-            if np.array_equal(np.cross(vec_pair[0], vec_pair[1]), np.array([0, 0, 0])):
+            n = np.cross(vec_pair[0], vec_pair[1])
+            if np.array_equal(n, np.array([0, 0, 0])):
                 continue
-            dot = np.dot(vec_pair[0], vec_pair[1])
-            M1 = P1 + np.dot(P2-P1, vec_pair[0]-vec_pair[1]*dot)/(1-dot**2) * vec_pair[0]
-            M2 = P2 + np.dot(P2-P1, vec_pair[0]*dot-vec_pair[1])/(1-dot**2) * vec_pair[1]
+            M1 = P1 + np.dot(P2-P1, np.cross(vec_pair[1], n))/np.dot(n, n) * vec_pair[0]
+            M2 = P2 + np.dot(P2-P1, np.cross(vec_pair[0], n))/np.dot(n, n) * vec_pair[1]
             Pcs = (M1+M2)/2
             Pcs_storage.append(Pcs)
         SE_transformation = coordinate_systems.get_transformation('Stereo', 'EARTH')
