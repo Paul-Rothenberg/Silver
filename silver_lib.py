@@ -1,8 +1,11 @@
 from pathlib import Path
 import xarray as xr
+import rioxarray as rxr
 import cv2 as cv
 import numpy as np
 import mounttree as mnt
+from metpy.calc import pressure_to_height_std
+from metpy.units import units
 
 
 def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
@@ -170,20 +173,72 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     return VD_Vector_clean
 
 
+def cloud_point_filter(Pcs_storageN, ref_height, DSM_Data):
+    '''
+    This function filters calculated cloud points according to plausibility. To do this, the heights are checked. Cloud
+    points cannot be higher than the stereo reference system, as Velox looks in the nadir direction and does not see
+    above the horizon even when HALO is inclined. The height of the reference system corresponds approximately to the
+    average height of HALO during the recording of the image pair. Furthermore, no cloud points are used that are below
+    the height of the 1000 hPa layer according to the U.S. standard atmosphere. In reality, such clouds do exist, but
+    there is no ERA5 wind data available for them, which is essential for wind correction. The points are then checked
+    again using a digital surface model. This ensures that no points lie below the ground or that the earth's surface is
+    incorrectly tracked. Points found less than one hundred meters above the surface are deleted. If no or a spatially
+    incomplete surface model is passed to the function, sea level is assumed at the undefined positions, whereby the
+    lowest points are removed by the 1000 hPa filter.
+
+    :param Pcs_storageN: Array of cloud points in natural coordinates of WGS84
+    :param ref_height: Height of the stereo reference system above WGS84
+    :param DSM_Data: Data of the digital surface model
+    :return: filtered array of cloud points in natural coordinates of WGS84
+    '''
+    Pcs_filtered = []
+    height_1000hPa = pressure_to_height_std(1000*units.hPa).to_base_units().magnitude
+    No_DSM = True
+    if np.shape(DSM_Data) != ():
+        No_DSM = False
+        lat_coords = DSM_Data['y'].values
+        lon_coords = DSM_Data['x'].values
+    for Pcs in Pcs_storageN:
+        if Pcs[2] > ref_height:
+            continue
+        if Pcs[2] < height_1000hPa:
+            continue
+        if No_DSM:
+            Pcs_filtered.append(Pcs)
+        else:
+            if (np.min(lat_coords) <= Pcs[0] <= np.max(lat_coords) and
+                    np.min(lon_coords) <= Pcs[1] <= np.max(lon_coords)):
+                Pcs_lat_index = np.argmin(np.abs(lat_coords - Pcs[0]))
+                Pcs_lon_index = np.argmin(np.abs(lon_coords - Pcs[1]))
+                surface_height = DSM_Data[0, Pcs_lat_index, Pcs_lon_index].values
+                if Pcs[2] < surface_height + 100:
+                    continue
+                else:
+                    Pcs_filtered.append(Pcs)
+            else:
+                Pcs_filtered.append(Pcs)
+    return np.array(Pcs_filtered)
+
+
 def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
-                                 vid_edge_trim):
+                                 vid_edge_trim, ERA5_UV_Wind_File, DSM_file):
     coordinate_systems = mnt.load_mounttree(MNT_File)
     Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
     HALO_IRS_Data = xr.open_dataset(HALO_IRS_File)
-    IRS_TIME = HALO_IRS_Data['time']    # time
+    IRS_TIME = HALO_IRS_Data['time']   # time
     IRS_LAT = HALO_IRS_Data['IRS_LAT'] # Latitude
     IRS_LON = HALO_IRS_Data['IRS_LON'] # Longitude
     IRS_ALT = HALO_IRS_Data['IRS_ALT'] # Altitude
     IRS_PHI = HALO_IRS_Data['IRS_PHI'] # Roll
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
+    UV_Wind_Data = xr.open_dataset(ERA5_UV_Wind_File)
+    if DSM_file != '':
+        DSM_Data = rxr.open_rasterio(DSM_file)
+    else:
+        DSM_Data = None
 
-    for vid in range(len(pic_pair_vids_list)): # ToDo: Remove -56
+    for vid in range(len(pic_pair_vids_list)-56): # ToDo: Remove -56
         vid_time = pic_pair_vids_list[vid][-33:-4]
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
         # reconstruction doesn't work if P1=P2
@@ -203,7 +258,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         PrefE_N = EARTH_frame.toNatural(PrefE)
         ref_lat, ref_lon, ref_height = PrefE_N
 
-        if np.array_equal(pixel_pairs_list[vid], None):
+        if np.shape(pixel_pairs_list[vid]) == ():
             continue # ToDo: adapting behavior depending on data storage
         view_vectors = viewing_direction(pixel_pairs_list[vid], Velox_VDC_Data, vid_edge_trim)
         if view_vectors.shape == (0, 2, 3):
@@ -233,9 +288,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             Pcs = (M1+M2)/2
             Pcs_storage.append(Pcs)
         SE_transformation = coordinate_systems.get_transformation('Stereo', 'EARTH')
-        Pcs_storage = np.array(Pcs_storage)
-        Pcs_storage = np.stack(SE_transformation.apply_point(*Pcs_storage.T)).T
-        Pcs_storage = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storage])
-        np.set_printoptions(suppress=True)
-        print(Pcs_storage)
+        Pcs_storageE = np.stack(SE_transformation.apply_point(*np.array(Pcs_storage).T)).T
+        Pcs_storageN = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storageE])
+        Pcs_storageN = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
     return None
