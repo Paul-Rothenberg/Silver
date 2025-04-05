@@ -6,3 +6,4 @@ if __name__ == '__main__':
     pixel_pairs_list = cloud_point_pixel_pairs(pic_pair_vids_list)
     cloud_points = stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File,
                                                 MNT_File, vid_edge_trim, ERA5_UV_Wind_File, DSM_file)
+    # ToDo: NetCDF Function

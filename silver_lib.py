@@ -1,11 +1,13 @@
 from pathlib import Path
+import os
 import xarray as xr
 import rioxarray as rxr
 import cv2 as cv
 import numpy as np
 import mounttree as mnt
-from metpy.calc import pressure_to_height_std
+from metpy.calc import pressure_to_height_std, height_to_pressure_std
 from metpy.units import units
+import scipy.interpolate as sci
 
 
 def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
@@ -97,6 +99,7 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
         else:
             pixel_pairs = None
         pixel_pairs_list.append(pixel_pairs)
+        os.remove(pic_pair_vid)
     return pixel_pairs_list
 
 
@@ -220,6 +223,18 @@ def cloud_point_filter(Pcs_storageN, ref_height, DSM_Data):
     return np.array(Pcs_filtered)
 
 
+def simplified_cloud_point_filter(Pcs_storageN, ref_height): # ToDo: Docs
+    Pcs_index = []
+    height_1000hPa = pressure_to_height_std(1000*units.hPa).to_base_units().magnitude
+    for Pi, Pcs in enumerate(Pcs_storageN):
+        if Pcs[2] > ref_height:
+            Pcs_index.append(Pi)
+            continue
+        if Pcs[2] < height_1000hPa:
+            Pcs_index.append(Pi)
+    return np.array(Pcs_index)
+
+
 def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
                                  vid_edge_trim, ERA5_UV_Wind_File, DSM_file):
     coordinate_systems = mnt.load_mounttree(MNT_File)
@@ -233,6 +248,12 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
     UV_Wind_Data = xr.open_dataset(ERA5_UV_Wind_File)
+    UV_Wind_time = UV_Wind_Data['valid_time']
+    UV_Wind_lat = UV_Wind_Data['latitude']
+    UV_Wind_lon = UV_Wind_Data['longitude']
+    UV_Wind_pl = UV_Wind_Data['pressure_level']
+    U_Wind = UV_Wind_Data['u']
+    V_Wind = UV_Wind_Data['v']
     if DSM_file != '':
         DSM_Data = rxr.open_rasterio(DSM_file)
     else:
@@ -288,7 +309,71 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             Pcs = (M1+M2)/2
             Pcs_storage.append(Pcs)
         SE_transformation = coordinate_systems.get_transformation('Stereo', 'EARTH')
+        ES_transformation = coordinate_systems.get_transformation('EARTH', 'Stereo')
         Pcs_storageE = np.stack(SE_transformation.apply_point(*np.array(Pcs_storage).T)).T
         Pcs_storageN = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storageE])
+        Pcs_storageN = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
+        if np.shape(Pcs_storageN) == (0,):
+            continue # ToDo: adapting behavior depending on data storage
+        Pcs_storageE = np.array([EARTH_frame.toCartesian(Pcs) for Pcs in Pcs_storageN])
+        Pcs_storageS = np.stack(ES_transformation.apply_point(*Pcs_storageE.T)).T
+
+        time_index = np.where(UV_Wind_time.astype(str) == vid_time[:-15]+'00:00.000000000')[0].item()
+        time_position = int(vid_time[-15:-13])*60+float(vid_time[-12:])
+        for iteration in range(5):
+            PcsW_storage = []
+            for PcsN, PcsE, PcsS, vec_pair in zip(Pcs_storageN, Pcs_storageE, Pcs_storageS, VV):
+                lat_index = np.where(UV_Wind_lat == np.floor(PcsN[0]*4)/4)[0].item()
+                lon_index = np.where(UV_Wind_lon == np.floor(PcsN[1]*4)/4)[0].item()
+                pl_height = height_to_pressure_std(PcsN[2]*units.meter).magnitude
+                pl_index = np.argmin(np.abs(UV_Wind_pl.values - pl_height))
+                if UV_Wind_pl[pl_index] < pl_height:
+                    pl_index -= 1
+
+                if np.floor(PcsN[1]*4)/4 == 179.75:
+                    lon180 = np.where(UV_Wind_lon == -180.)[0].item()
+                    u_wind_patch = xr.concat((U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             lat_index-1:lat_index+1, lon_index:lon_index+1],
+                                             U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
+                    v_wind_patch = xr.concat((V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             lat_index-1:lat_index+1, lon_index:lon_index+1],
+                                             V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
+                else:
+                    u_wind_patch = U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                   lat_index-1:lat_index+1, lon_index:lon_index+2]
+                    v_wind_patch = V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                   lat_index-1:lat_index+1, lon_index:lon_index+2]
+
+                alt_height = (pressure_to_height_std(u_wind_patch['pressure_level'].values*units.hPa)
+                              .to_base_units().magnitude)
+                patch_coords = np.array(np.meshgrid(u_wind_patch['latitude'], u_wind_patch['longitude'],
+                                                    alt_height)).T.reshape(-1, 3)
+
+                patch_coordsE = np.array([EARTH_frame.toCartesian(GP) for GP in patch_coords])
+                grid_points = np.concatenate((np.c_[patch_coordsE, [0]*12], np.c_[patch_coordsE, [3600]*12]))
+
+                u_wind = sci.griddata(grid_points, u_wind_patch.values.ravel(), np.append(PcsE, time_position))
+                v_wind = sci.griddata(grid_points, v_wind_patch.values.ravel(), np.append(PcsE, time_position))
+                wind_vector = np.array([v_wind.item(), u_wind.item(), 0])
+
+                P1W = P1 + wind_vector/2
+                P2W = P2 - wind_vector/2
+                n = np.cross(vec_pair[0], vec_pair[1])
+                M1W = P1W + np.dot(P2W-P1W, np.cross(vec_pair[1], n))/np.dot(n, n) * vec_pair[0]
+                M2W = P2W + np.dot(P2W-P1W, np.cross(vec_pair[0], n))/np.dot(n, n) * vec_pair[1]
+                PcsW = (M1W+M2W)/2
+                PcsW_storage.append(PcsW)
+            Pcs_storageS = np.array(PcsW_storage)
+            Pcs_storageE = np.stack(SE_transformation.apply_point(*Pcs_storageS.T)).T
+            Pcs_storageN = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storageE])
+            filter_indices = simplified_cloud_point_filter(Pcs_storageN, ref_height)
+            if np.shape(filter_indices) != (0,):
+                Pcs_storageS = np.delete(Pcs_storageS, filter_indices, axis=0)
+                Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
+                Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
+                if np.shape(Pcs_storageN) == (0, 3):
+                    break
         Pcs_storageN = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
     return None
