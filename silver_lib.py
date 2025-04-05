@@ -8,6 +8,7 @@ import mounttree as mnt
 from metpy.calc import pressure_to_height_std, height_to_pressure_std
 from metpy.units import units
 import scipy.interpolate as sci
+import time
 
 
 def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
@@ -108,13 +109,11 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     This function translates an array of pixel position pairs into an array of viewing direction vectors. First, it
     calculates how the calibration data set is positioned in relation to the brightness temperature data set. Then a
     decision is made as if the zenith and azimuth angle of a point needs to be interpolated. This is the case if the
-    point does not lie directly on a pixel. For interpolation, a weighted average is calculated from the four
-    surrounding pixels. The distance is included linearly in the weights, whereby the influence decreases to zero over a
-    distance of one pixel. In the next step, the viewing direction vector is calculated from the zenith and azimuth
-    angle found. If there are no four surrounding pixels during the interpolation, a None vector is added. This is only
-    the case if the point lies between the center of an edge pixel and the absolute edge of the image and the trim of
-    this side is zero. If the translated array contains None vectors, the entire pixel point pair is deleted and only
-    valid vectors are returned.
+    point does not lie directly on a pixel. In the next step, the viewing direction vector is calculated from the zenith
+    and azimuth angle found. If there are no four surrounding pixels during the interpolation, a None vector is added.
+    This is only the case if the point lies between the center of an edge pixel and the absolute edge of the image and
+    the trim of this side is zero. If the translated array contains None vectors, the entire pixel point pair is deleted
+    and only valid vectors are returned.
 
     :param pixel_pairs: array containing the pixel point pairs of consecutive images
     :param Velox_VDC_Data: Velox calibration file which assigns a viewing direction to each pixel in the camera
@@ -156,22 +155,20 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
             if z_patch.shape != (2, 2) or a_patch.shape != (2, 2):
                 VD_Vector_storage.append((None, None, None))
                 continue
+            px_x_coords = z_patch['x-pixel']
+            px_y_coords = z_patch['y-pixel']
             z_patch = z_patch.values*np.pi/180
             a_patch = a_patch.values*np.pi/180
-            d = np.array([[((pixel[0]-x0)**2+(pixel[1]-y0)**2)**0.5,
-                           ((pixel[0]-x0)**2+(1-pixel[1]+y0)**2)**0.5],
-                          [((1-pixel[0]+x0)**2+(pixel[1]-y0)**2)**0.5,
-                           ((1-pixel[0]+x0)**2+(1-pixel[1]+y0)**2)**0.5]])
-            w = np.vectorize(lambda x: max(0, 1-x), otypes=[float])(d)
-            w = w/np.sum(w)
             # circularity consideration of the zenith angle data not necessary since the breakpoint is behind the camera
-            z = np.sum(z_patch*w)
+            z = sci.RegularGridInterpolator((px_x_coords, px_y_coords), z_patch)(pixel).item()
             # circularity consideration of the azimuth angle data
-            a = np.arctan2(np.sum(np.sin(a_patch)*w), np.sum(np.cos(a_patch)*w))
+            a_sin = sci.RegularGridInterpolator((px_x_coords, px_y_coords), np.sin(a_patch))(pixel)
+            a_cos = sci.RegularGridInterpolator((px_x_coords, px_y_coords), np.cos(a_patch))(pixel)
+            a = np.arctan2(a_sin, a_cos).item()
             VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
             VD_Vector_storage.append(VD_Vector)
     VD_Vector_array = np.array(VD_Vector_storage).reshape(-1,2,3)
-    VD_Vector_clean = (np.delete(VD_Vector_array, np.unique(np.where(VD_Vector_array == None)[0]), 0)
+    VD_Vector_clean = (np.delete(VD_Vector_array, np.unique(np.where(VD_Vector_array == None)[0]), axis=0)
                        .astype(np.float64))
     return VD_Vector_clean
 
