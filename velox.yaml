@@ -5,17 +5,13 @@ mounttree:
   framename: EARTH
   framespec: WGS-84
   subframes:
-    - framename: local horizon
+    - framename: HALO
       position: [ lat, lon, height ]
-      rotation: [ 0, 0, 0 ]
+      rotation: [ roll, pitch, yaw ]
       subframes:
-        - framename: HALO
+        - framename: VELOX
           position: [ 0, 0, 0 ]
-          rotation: [ roll, pitch, yaw ]
-          subframes:
-            - framename: VELOX
-              position: [ 0, 0, 0 ]
-              rotation: [ 0, 0, 0 ]
-    - framename: Stereo
+          rotation: [ 0, 0, 0 ]
+    - framename: STEREO
       position: [ref_lat, ref_lon, ref_height]
       rotation: [ 0, 0, 0 ]

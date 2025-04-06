@@ -17,7 +17,7 @@ def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
 
     :param Velox_BT_File: Path to Velox NetCDF file containing the brightness temperatures
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
-    :return: List of Paths from image pair videos
+    :return: List of paths from image pair videos
     """
     Path('vids_tmp').mkdir(exist_ok=True)
     pic_pair_vids_list = []
@@ -60,7 +60,7 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
     quality of the point pairs by a backward calculation of the optical flow, returning only high quality points.
 
     :param pic_pair_vids_list: List of Paths from image pair videos
-    :return: List of Arrays containing the image point pairs in pixel units
+    :return: List of arrays containing the image point pairs in pixel units
     """
     pixel_pairs_list = []
     for pic_pair_vid in pic_pair_vids_list:
@@ -115,11 +115,11 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     the trim of this side is zero. If the translated array contains None vectors, the entire pixel point pair is deleted
     and only valid vectors are returned.
 
-    :param pixel_pairs: array containing the pixel point pairs of consecutive images
+    :param pixel_pairs: Array containing the pixel point pairs of consecutive images
     :param Velox_VDC_Data: Velox calibration file which assigns a viewing direction to each pixel in the camera
                            reference frame
-    :param vid_edge_trim: list specifying how the brightness temperature data set was trimmed in respect to the raw data
-    :return: array which contains the translated viewing vectors in the camera reference frame
+    :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
+    :return: Array which contains the translated viewing vectors in the camera reference frame
     """
     # trimming the calibration data set to the video size
     real_vid_edge_trim = [vid_edge_trim[0]+(vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
@@ -182,67 +182,58 @@ def cloud_point_filter(Pcs_storageN, ref_height, DSM_Data):
     the height of the 1000 hPa layer according to the U.S. standard atmosphere. In reality, such clouds do exist, but
     there is no ERA5 wind data available for them, which is essential for wind correction. The points are then checked
     again using a digital surface model. This ensures that no points lie below the ground or that the earth's surface is
-    incorrectly tracked. Points found less than one hundred meters above the surface are deleted. If no or a spatially
+    incorrectly tracked. Points found less than one hundred meters above the surface are returned. If no or a spatially
     incomplete surface model is passed to the function, sea level is assumed at the undefined positions, whereby the
     lowest points are removed by the 1000 hPa filter.
 
     :param Pcs_storageN: Array of cloud points in natural coordinates of WGS84
     :param ref_height: Height of the stereo reference system above WGS84
     :param DSM_Data: Data of the digital surface model
-    :return: filtered array of cloud points in natural coordinates of WGS84
-    """
-    Pcs_filtered = []
-    height_1000hPa = pressure_to_height_std(1000*units.hPa).to_base_units().magnitude
-    No_DSM = True
-    if np.shape(DSM_Data) != ():
-        No_DSM = False
-        lat_coords = DSM_Data['y'].values
-        lon_coords = DSM_Data['x'].values
-    for Pcs in Pcs_storageN:
-        if Pcs[2] > ref_height:
-            continue
-        if Pcs[2] < height_1000hPa:
-            continue
-        if No_DSM:
-            Pcs_filtered.append(Pcs)
-        else:
-            if (np.min(lat_coords) <= Pcs[0] <= np.max(lat_coords) and
-                    np.min(lon_coords) <= Pcs[1] <= np.max(lon_coords)):
-                Pcs_lat_index = np.argmin(np.abs(lat_coords - Pcs[0]))
-                Pcs_lon_index = np.argmin(np.abs(lon_coords - Pcs[1]))
-                surface_height = DSM_Data[0, Pcs_lat_index, Pcs_lon_index].values
-                if Pcs[2] < surface_height + 100:
-                    continue
-                else:
-                    Pcs_filtered.append(Pcs)
-            else:
-                Pcs_filtered.append(Pcs)
-    return np.array(Pcs_filtered)
-
-
-def simplified_cloud_point_filter(Pcs_storageN, ref_height):
-    """
-    This is a simplified version of the cloud_point_filter() function, which only checks that the cloud points lie
-    between the 1000 hPa layer and the reference altitude. The indices of the entered cloud points that do not fulfill
-    these conditions are returned.
-
-    :param Pcs_storageN: Array of cloud points in natural coordinates of WGS84
-    :param ref_height: Height of the stereo reference system above WGS84
     :return: Array of indices for cloud points that need to be filtered out
     """
     Pcs_index = []
     height_1000hPa = pressure_to_height_std(1000*units.hPa).to_base_units().magnitude
+    DSM_exists = False
+    if np.shape(DSM_Data) != ():
+        DSM_exists = True
+        lat_coords = DSM_Data['y'].values
+        lon_coords = DSM_Data['x'].values
     for Pi, Pcs in enumerate(Pcs_storageN):
         if Pcs[2] > ref_height:
             Pcs_index.append(Pi)
             continue
         if Pcs[2] < height_1000hPa:
             Pcs_index.append(Pi)
+            continue
+        if DSM_exists:
+            if (np.min(lat_coords) <= Pcs[0] <= np.max(lat_coords) and
+                    np.min(lon_coords) <= Pcs[1] <= np.max(lon_coords)):
+                Pcs_lat_index = np.argmin(np.abs(lat_coords - Pcs[0]))
+                Pcs_lon_index = np.argmin(np.abs(lon_coords - Pcs[1]))
+                surface_height = DSM_Data[0, Pcs_lat_index, Pcs_lon_index].values
+                if Pcs[2] < surface_height + 100:
+                    Pcs_index.append(Pi)
     return np.array(Pcs_index)
 
 
 def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
                                  vid_edge_trim, ERA5_UV_Wind_File, DSM_file):
+    """
+    This function performs a stereographic reconstruction of cloud points based on the method presented by Kölling
+    et al. (2019) and corrects the wind-cloud shift according to the technique of Volkmer et al. (2024).
+
+    :param pic_pair_vids_list: List of Paths from image pair videos
+    :param pixel_pairs_list: List of Arrays containing the image point pairs in pixel units
+    :param Velox_VDC_File: Velox calibration file which assigns a viewing direction to each pixel in the camera
+                           reference frame
+    :param HALO_IRS_File: HALO position file
+    :param MNT_File: File describing the used coordinate systems and their relation to each other
+    :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
+    :param ERA5_UV_Wind_File: Wind data file
+    :param DSM_file: Digital surface model file
+    :return: Nested list containing the times of reconstruction [0], the reference point positions of the stereo
+             coordinate system [1] and the arrays of reconstructed cloud points [2]
+    """
     # load the data files
     coordinate_systems = mnt.load_mounttree(MNT_File)
     Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
@@ -267,9 +258,9 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     else:
         DSM_Data = None
 
-    cloud_point_main_storage = []
+    cloud_point_main_storage = [[],[],[]]
     # perform reconstruction for every video
-    for vid in range(len(pic_pair_vids_list)-56): # ToDo: Remove -56
+    for vid in range(len(pic_pair_vids_list)-55): # ToDo: Remove -55
         vid_time = pic_pair_vids_list[vid][-33:-4]
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
         # reconstruction doesn't work if P1=P2
@@ -303,19 +294,20 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
                                   roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index],
                                   ref_lat=ref_lat, ref_lon=ref_lon, ref_height=ref_height)
-        VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
+        VS_transformation = coordinate_systems.get_transformation('VELOX', 'STEREO')
         P1 = np.array(VS_transformation.apply_point(0, 0, 0))
         VV1 = np.stack(VS_transformation.apply_direction(*view_vectors[:,0,:].T)).T
 
         coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
                                   roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
-        VS_transformation = coordinate_systems.get_transformation('VELOX', 'Stereo')
+        VS_transformation = coordinate_systems.get_transformation('VELOX', 'STEREO')
         P2 = np.array(VS_transformation.apply_point(0, 0, 0))
         VV2 = np.stack(VS_transformation.apply_direction(*view_vectors[:, 1, :].T)).T
 
         # first point reconstruction
         VV = np.stack((VV1, VV2), axis=1)
         Pcs_storage = []
+        VV_storage = []
         for vec_pair in VV:
             n = np.cross(vec_pair[0], vec_pair[1])
             # test that view vectors from P1 and P2 are not identical for the same tracked point
@@ -326,28 +318,35 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             M2 = P2 + np.dot(P2-P1, np.cross(vec_pair[0], n))/np.dot(n, n) * vec_pair[1]
             Pcs = (M1+M2)/2
             Pcs_storage.append(Pcs)
+            VV_storage.append(vec_pair)
+        VV = np.array(VV_storage)
+        if len(Pcs_storage) == 0:
+            continue
+
         # conversion of cloud points from the stereo reference system (S) to the Cartesian earth system (E) and then to
         # natural coordinates of the earth system (N)
-        SE_transformation = coordinate_systems.get_transformation('Stereo', 'EARTH')
-        ES_transformation = coordinate_systems.get_transformation('EARTH', 'Stereo')
-        Pcs_storageE = np.stack(SE_transformation.apply_point(*np.array(Pcs_storage).T)).T
+        SE_transformation = coordinate_systems.get_transformation('STEREO', 'EARTH')
+        Pcs_storageS = np.array(Pcs_storage)
+        Pcs_storageE = np.stack(SE_transformation.apply_point(*Pcs_storageS.T)).T
         Pcs_storageN = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storageE])
         # filtering of the cloud points for plausibility
-        Pcs_storageN = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
-        # test if there are still some cloud points after filtering
-        if np.shape(Pcs_storageN) == (0,):
-            continue
-        # reconversion to the stereo reference system for the application of wind correction
-        Pcs_storageE = np.array([EARTH_frame.toCartesian(Pcs) for Pcs in Pcs_storageN])
-        Pcs_storageS = np.stack(ES_transformation.apply_point(*Pcs_storageE.T)).T
+        filter_indices = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
+        if np.shape(filter_indices) != (0,):
+            Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
+            Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
+            VV = np.delete(VV, filter_indices, axis=0)
+            # test if there are still some cloud points after filtering
+            if np.shape(Pcs_storageN) == (0, 3):
+                continue
 
         # calculation of the time index in the ERA5 wind data and the position of the image pair in the time interval
         time_index = np.where(UV_Wind_time.astype(str) == vid_time[:-15]+'00:00.000000000')[0].item()
         time_position = int(vid_time[-15:-13])*60+float(vid_time[-12:])+0.5
         # iterative wind correction
-        for iteration in range(5):
+        number_of_iterations = 5
+        for iteration in range(number_of_iterations):
             PcsW_storage = []
-            for PcsN, PcsE, PcsS, vec_pair in zip(Pcs_storageN, Pcs_storageE, Pcs_storageS, VV):
+            for PcsN, PcsE, vec_pair in zip(Pcs_storageN, Pcs_storageE, VV):
                 # indices of the surrounding wind data points
                 lat_index = np.where(UV_Wind_lat == np.floor(PcsN[0]*4)/4)[0].item()
                 lon_index = np.where(UV_Wind_lon == np.floor(PcsN[1]*4)/4)[0].item()
@@ -398,20 +397,28 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
                 M2W = P2W + np.dot(P2W-P1W, np.cross(vec_pair[0], n))/np.dot(n, n) * vec_pair[1]
                 PcsW = (M1W+M2W)/2
                 PcsW_storage.append(PcsW)
+
             # conversion of the wind-corrected points from the stereo system to the Cartesian and natural earth system
             Pcs_storageS = np.array(PcsW_storage)
             Pcs_storageE = np.stack(SE_transformation.apply_point(*Pcs_storageS.T)).T
             Pcs_storageN = np.array([EARTH_frame.toNatural(Pcs) for Pcs in Pcs_storageE])
+
             # filter and delete dubiously corrected points
-            filter_indices = simplified_cloud_point_filter(Pcs_storageN, ref_height)
+            if iteration+1 == number_of_iterations:
+                filter_indices = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
+            else:
+                filter_indices = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data=None)
             if np.shape(filter_indices) != (0,):
-                Pcs_storageS = np.delete(Pcs_storageS, filter_indices, axis=0)
-                Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
                 Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
+                Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
+                VV = np.delete(VV, filter_indices, axis=0)
                 if np.shape(Pcs_storageN) == (0, 3):
                     break
         # check that there are reconstructed cloud points
         if np.shape(Pcs_storageN) == (0, 3):
             continue
-        Pcs_storageN = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
-    return None
+        # saving data to main storage
+        cloud_point_main_storage[0].append(np.datetime64(vid_time)+np.timedelta64(500, 'ms'))
+        cloud_point_main_storage[1].append(PrefE_N)
+        cloud_point_main_storage[2].append(Pcs_storageN)
+    return cloud_point_main_storage
