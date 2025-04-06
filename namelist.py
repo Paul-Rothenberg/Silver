@@ -5,3 +5,4 @@ MNT_File = 'velox.yaml'
 vid_edge_trim = [2, 1, 3, 4] # Pixel size difference of the processed data set from the raw data (N E S W)
 ERA5_UV_Wind_File = 'wind-testdata.nc'
 DSM_file = 'dsm_test.tif'
+Pcs_save_path = 'Pcs_test.nc'

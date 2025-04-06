@@ -260,7 +260,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
 
     cloud_point_main_storage = [[],[],[]]
     # perform reconstruction for every video
-    for vid in range(len(pic_pair_vids_list)-55): # ToDo: Remove -55
+    for vid in range(len(pic_pair_vids_list)):
         vid_time = pic_pair_vids_list[vid][-33:-4]
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
         # reconstruction doesn't work if P1=P2
@@ -278,8 +278,8 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
         P2E = VE_transformation.apply_point(0, 0, 0)
         PrefE = [(a+b)/2 for a, b in zip(P1E, P2E)]
-        PrefE_N = EARTH_frame.toNatural(PrefE)
-        ref_lat, ref_lon, ref_height = PrefE_N
+        PrefN = EARTH_frame.toNatural(PrefE)
+        ref_lat, ref_lon, ref_height = PrefN
 
         # test if pixel pairs exist
         if np.shape(pixel_pairs_list[vid]) == ():
@@ -419,6 +419,56 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             continue
         # saving data to main storage
         cloud_point_main_storage[0].append(np.datetime64(vid_time)+np.timedelta64(500, 'ms'))
-        cloud_point_main_storage[1].append(PrefE_N)
+        cloud_point_main_storage[1].append(PrefN)
         cloud_point_main_storage[2].append(Pcs_storageN)
     return cloud_point_main_storage
+
+
+def save_to_NetCDF(cloud_point_main_storage, Pcs_save_path):
+    """
+    This function saves the reconstructed cloud points and the position of the corresponding stereo reference point in a
+    NetCDF file. Since the number of reconstructed points per image pair can vary, the individual cloud point arrays are
+    evenly filled with np.nan values to obtain the same shape.
+
+    :param cloud_point_main_storage: Nested list containing the times of reconstruction [0], the reference point
+                                     positions of the stereo coordinate system [1] and the arrays of reconstructed cloud
+                                     points [2]
+    :param Pcs_save_path: Path to the location where the cloud points are stored in the form of a NetCDF file
+    :return: Boolean whether cloud points could be saved
+    """
+    if len(cloud_point_main_storage[0]) == 0:
+        return False
+    Nr = [len(Pcs) for Pcs in cloud_point_main_storage[2]]
+    Nr_max = np.max(Nr)
+    cloud_point_main_storage[2] = [np.concatenate((Pcs, np.array([np.nan]*3*(Nr_max-Nr[Pi])).reshape(-1, 3)))
+                                   for Pi, Pcs in enumerate(cloud_point_main_storage[2])]
+
+    data_vars = {}
+    data_vars['ref_lat'] = (('time'), [PrefN[0] for PrefN in cloud_point_main_storage[1]])
+    data_vars['ref_lon'] = (('time'), [PrefN[1] for PrefN in cloud_point_main_storage[1]])
+    data_vars['ref_alt'] = (('time'), [PrefN[2] for PrefN in cloud_point_main_storage[1]])
+    data_vars['Pcs_lat'] = (('time', 'Nr'), [Pcs[:, 0] for Pcs in cloud_point_main_storage[2]])
+    data_vars['Pcs_lon'] = (('time', 'Nr'), [Pcs[:, 1] for Pcs in cloud_point_main_storage[2]])
+    data_vars['Pcs_alt'] = (('time', 'Nr'), [Pcs[:, 2] for Pcs in cloud_point_main_storage[2]])
+
+    DataNetCDF = xr.Dataset(data_vars=data_vars,
+                            coords={'time': cloud_point_main_storage[0],
+                                    'Nr': range(1, Nr_max+1)},
+                            attrs={'description': 'Cloud points reconstructed by Silver'})
+    DataNetCDF['time'].attrs = {'description': 'Mean recording time of the image pair used for reconstruction'}
+    DataNetCDF['Nr'].attrs = {'description': 'Key number of the cloud point'}
+    DataNetCDF['ref_lat'].attrs = {'description': 'Latitude of the stereo reference point', 'units': 'Degree',
+                                   'reference system': 'WGS84'}
+    DataNetCDF['ref_lon'].attrs = {'description': 'Longitude of the stereo reference point', 'units': 'Degree',
+                                   'reference system': 'WGS84'}
+    DataNetCDF['ref_alt'].attrs = {'description': 'Altitude of the stereo reference point', 'units': 'Meter',
+                                   'reference system': 'WGS84'}
+    DataNetCDF['Pcs_lat'].attrs = {'description': 'Latitude of the cloud point', 'units': 'Degree',
+                                   'reference system': 'WGS84'}
+    DataNetCDF['Pcs_lon'].attrs = {'description': 'Longitude of the cloud point', 'units': 'Degree',
+                                   'reference system': 'WGS84'}
+    DataNetCDF['Pcs_alt'].attrs = {'description': 'Altitude of the cloud point', 'units': 'Meter',
+                                   'reference system': 'WGS84'}
+
+    DataNetCDF.to_netcdf(path=Pcs_save_path)
+    return True
