@@ -121,12 +121,15 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
     :return: Array which contains the translated viewing vectors in the camera reference frame
     """
-    # get the real edge trim of the video
+    # trimming the calibration data set to the video size
     real_vid_edge_trim = [vid_edge_trim[0]+(vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[1]+(vid_edge_trim[1]<vid_edge_trim[3] and sum(vid_edge_trim[1::2])%2!=0),
                           vid_edge_trim[2]+(vid_edge_trim[2]<vid_edge_trim[0] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[3]+(vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)]
-
+    Velox_VDC_Data = Velox_VDC_Data.assign_coords({'x-pixel': range(0-real_vid_edge_trim[3],
+                                                                    640-real_vid_edge_trim[3]),
+                                                   'y-pixel': range(0-real_vid_edge_trim[0],
+                                                                    512-real_vid_edge_trim[0])})
     zenith = Velox_VDC_Data['zenith']
     azimuth = Velox_VDC_Data['azimuth']
 
