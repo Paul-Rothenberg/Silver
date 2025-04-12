@@ -46,8 +46,8 @@ def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
             vmin = np.min(np.stack((BT_2D[t+1], BT_2D[t])))
             grayscale_data0 = np.array(np.round((BT_2D[t] - vmin) / (vmax - vmin) * 255, 0), dtype=np.uint8)
             grayscale_data1 = np.array(np.round((BT_2D[t+1] - vmin) / (vmax - vmin) * 255, 0), dtype=np.uint8)
-            vid_output.write(grayscale_data0.T[::-1])
-            vid_output.write(grayscale_data1.T[::-1])
+            vid_output.write(grayscale_data0[::-1, ::-1].T)
+            vid_output.write(grayscale_data1[::-1, ::-1].T)
             vid_output.release()
             pic_pair_vids_list.append('vids_tmp/'+str(time[t].values)+'.avi')
     return pic_pair_vids_list
@@ -121,17 +121,12 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
     :return: Array which contains the translated viewing vectors in the camera reference frame
     """
-    # trimming the calibration data set to the video size
+    # get the real edge trim of the video
     real_vid_edge_trim = [vid_edge_trim[0]+(vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[1]+(vid_edge_trim[1]<vid_edge_trim[3] and sum(vid_edge_trim[1::2])%2!=0),
                           vid_edge_trim[2]+(vid_edge_trim[2]<vid_edge_trim[0] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[3]+(vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)]
-    real_vid_edge_trim = [0,0,0,0] # ToDo: Remove when correct calibration data is ready
-    # This line is used for debugging purposes only. Data is not selected by using coordinates but by indices.
-    Velox_VDC_Data = Velox_VDC_Data.assign_coords({'x-pixel': range(0-real_vid_edge_trim[3],
-                                                                    640-real_vid_edge_trim[3]-5), # ToDo: Remove -5 when correct calibration data is ready
-                                                   'y-pixel': range(0-real_vid_edge_trim[0],
-                                                                    512-real_vid_edge_trim[0]-5)})# ToDo: Remove -5 when correct calibration data is ready
+
     zenith = Velox_VDC_Data['zenith']
     azimuth = Velox_VDC_Data['azimuth']
 
@@ -140,8 +135,8 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
         if pixel[0]%1 == 0 and pixel[1]%1 == 0:
             x = int(pixel[0])+real_vid_edge_trim[3]
             y = int(pixel[1])+real_vid_edge_trim[0]
-            z = zenith[x][y].values*np.pi/180
-            a = azimuth[x][y].values*np.pi/180
+            z = zenith[x, y].values*np.pi/180
+            a = azimuth[x, y].values*np.pi/180
             VD_Vector = (np.tan(z)*np.cos(a), -np.tan(z)*np.sin(a), 1)
             VD_Vector_storage.append(VD_Vector)
         else:
@@ -150,8 +145,8 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
             if x0 < 0 or y0 < 0:
                 VD_Vector_storage.append((None, None, None))
                 continue
-            z_patch = zenith[x0:x0+2].T[y0:y0+2].T
-            a_patch = azimuth[x0:x0+2].T[y0:y0+2].T
+            z_patch = zenith[x0:x0+2, y0:y0+2]
+            a_patch = azimuth[x0:x0+2, y0:y0+2]
             if z_patch.shape != (2, 2) or a_patch.shape != (2, 2):
                 VD_Vector_storage.append((None, None, None))
                 continue
