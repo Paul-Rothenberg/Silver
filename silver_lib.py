@@ -26,9 +26,9 @@ def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
     BT_2D = velox_data['BT_2D']
     # Removing pixel rows or columns if the number of pixels is odd. Data is removed from the edges with the smaller
     # vid_edge_trim.
-    BT_2D = BT_2D.isel({'y': range((vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0),
+    BT_2D = BT_2D.isel({'y': range((vid_edge_trim[3]>vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0),
                                    640-sum(vid_edge_trim[1::2])-
-                                   (vid_edge_trim[3]>vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)),
+                                   (vid_edge_trim[3]<vid_edge_trim[1] and sum(vid_edge_trim[1::2])%2!=0)),
                         'x': range((vid_edge_trim[0]>vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
                                    512-sum(vid_edge_trim[0::2])-
                                    (vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0))})
