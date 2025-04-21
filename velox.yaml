@@ -10,8 +10,8 @@ mounttree:
       rotation: [ roll, pitch, yaw ]
       subframes:
         - framename: VELOX
-          position: [ 0, 0, 0 ]
-          rotation: [ 0, 0, 0 ]
+          position: [ -8.048, -0.0665, 1.6256 ]
+          rotation: [ -2.68, -3.43, 0.17 ]
     - framename: STEREO
       position: [ref_lat, ref_lon, ref_height]
       rotation: [ 0, 0, 0 ]

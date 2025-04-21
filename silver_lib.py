@@ -67,15 +67,15 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
         cap = cv.VideoCapture(pic_pair_vid)
 
         # params for ShiTomasi corner detection
-        feature_params = dict(maxCorners=100,
-                              qualityLevel=0.3,
-                              minDistance=7,
+        feature_params = dict(maxCorners=1000,
+                              qualityLevel=0.1,
+                              minDistance=5,
                               blockSize=7)
 
         # Parameters for lucas kanade optical flow
-        lk_params = dict(winSize=(15, 15),
-                         maxLevel=2,
-                         criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03))
+        lk_params = dict(winSize=(50, 50),
+                         maxLevel=5,
+                         criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 30, 0.01))
 
         # read in frames
         ret, old_frame = cap.read()
