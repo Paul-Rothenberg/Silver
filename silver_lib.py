@@ -331,7 +331,6 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         filter_indices = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data)
         if np.shape(filter_indices) != (0,):
             Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
-            Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
             VV = np.delete(VV, filter_indices, axis=0)
             # test if there are still some cloud points after filtering
             if np.shape(Pcs_storageN) == (0, 3):
@@ -344,7 +343,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
         number_of_iterations = 5
         for iteration in range(number_of_iterations):
             PcsW_storage = []
-            for PcsN, PcsE, vec_pair in zip(Pcs_storageN, Pcs_storageE, VV):
+            for PcsN, vec_pair in zip(Pcs_storageN, VV):
                 # indices of the surrounding wind data points
                 lat_index = np.where(UV_Wind_lat == np.floor(PcsN[0]*4)/4)[0].item()
                 lon_index = np.where(UV_Wind_lon == np.floor(PcsN[1]*4)/4)[0].item()
@@ -354,37 +353,37 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
                     pl_index -= 1
 
                 # selection of the wind field surrounding the cloud point
-                # Three height layers are used, as with only two a cloud point just below a height layer can lie outside
-                # the convex hull when converted to Cartesian coordinates due to the curvature of the earth.
                 if np.floor(PcsN[1]*4)/4 == 179.75:
                     # in the case you are flying close to the antimeridian
                     lon180 = np.where(UV_Wind_lon == -180.)[0].item()
-                    u_wind_patch = xr.concat((U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                    u_wind_patch = xr.concat((U_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                              lat_index-1:lat_index+1, lon_index:lon_index+1],
-                                             U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             U_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                              lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
-                    v_wind_patch = xr.concat((V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                    v_wind_patch = xr.concat((V_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                              lat_index-1:lat_index+1, lon_index:lon_index+1],
-                                             V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                                             V_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                              lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
                 else:
-                    u_wind_patch = U_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                    u_wind_patch = U_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                    lat_index-1:lat_index+1, lon_index:lon_index+2]
-                    v_wind_patch = V_Wind[time_index:time_index+2, pl_index:pl_index+3,
+                    v_wind_patch = V_Wind[time_index:time_index+2, pl_index:pl_index+2,
                                    lat_index-1:lat_index+1, lon_index:lon_index+2]
 
-                # generating the interpolation grid points in the required Cartesian coordinates
+                # converting pressure altitude to metric altitude
                 alt_height = (pressure_to_height_std(u_wind_patch['pressure_level'].values*units.hPa)
                               .to_base_units().magnitude)
-                patch_coords = np.array(np.meshgrid(u_wind_patch['latitude'], u_wind_patch['longitude'],
-                                                    alt_height)).T.reshape(-1, 3)
-
-                patch_coordsE = np.array([EARTH_frame.toCartesian(GP) for GP in patch_coords])
-                grid_points = np.concatenate((np.c_[patch_coordsE, [0]*12], np.c_[patch_coordsE, [3600]*12]))
 
                 # interpolation of the wind vector
-                u_wind = sci.griddata(grid_points, u_wind_patch.values.ravel(), np.append(PcsE, time_position))
-                v_wind = sci.griddata(grid_points, v_wind_patch.values.ravel(), np.append(PcsE, time_position))
+                # A rectilinear grid is assumed for the interpolation. The earth does not quite fulfill this condition
+                # due to its ellipsoidal shape. However, the differences for the patch area are usually quite small.
+                # Since the wind field also follows the curvature of the earth, the interpolated values are likely to be
+                # more accurate than when converting and interpolating in a Cartesian coordinate system.
+                interpolation_point = np.append(time_position, list(PcsN)[-1:]+list(PcsN)[:-1])
+                u_wind = sci.RegularGridInterpolator(([0, 3600], alt_height, u_wind_patch['latitude'],
+                                                      u_wind_patch['longitude']), u_wind_patch)(interpolation_point)
+                v_wind = sci.RegularGridInterpolator(([0, 3600], alt_height, v_wind_patch['latitude'],
+                                                      v_wind_patch['longitude']), v_wind_patch)(interpolation_point)
                 wind_vector = np.array([v_wind.item(), u_wind.item(), 0])
 
                 # point reconstruction with wind correction
@@ -408,7 +407,6 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
                 filter_indices = cloud_point_filter(Pcs_storageN, ref_height, DSM_Data=None)
             if np.shape(filter_indices) != (0,):
                 Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
-                Pcs_storageE = np.delete(Pcs_storageE, filter_indices, axis=0)
                 VV = np.delete(VV, filter_indices, axis=0)
                 if np.shape(Pcs_storageN) == (0, 3):
                     break
