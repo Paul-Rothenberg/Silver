@@ -85,8 +85,11 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
         new_gray_frame = cv.cvtColor(new_frame, cv.COLOR_BGR2GRAY)
         # select good corner points
         p0 = cv.goodFeaturesToTrack(old_gray_frame, mask=None, **feature_params)
-        # calculate the optical flow
-        p1, st, err = cv.calcOpticalFlowPyrLK(old_gray_frame, new_gray_frame, p0, None, **lk_params)
+        if p0 is not None:
+            # calculate the optical flow
+            p1, st, err = cv.calcOpticalFlowPyrLK(old_gray_frame, new_gray_frame, p0, None, **lk_params)
+        else:
+            p1 = None
         if p1 is not None:
             # check quality of point pairs by calculating the optical flow backwards
             p0r, _st, _err = cv.calcOpticalFlowPyrLK(new_gray_frame, old_gray_frame, p1, None, **lk_params)
