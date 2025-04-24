@@ -242,8 +242,8 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     print('Reconstructing Cloud Points ...')
     # load the data files
     coordinate_systems = mnt.load_mounttree(MNT_File)
-    Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
-    HALO_IRS_Data = xr.open_dataset(HALO_IRS_File)
+    Velox_VDC_Data = xr.load_dataset(Velox_VDC_File)
+    HALO_IRS_Data = xr.load_dataset(HALO_IRS_File)
     IRS_TIME = HALO_IRS_Data['time']   # time
     IRS_LAT = HALO_IRS_Data['IRS_LAT'] # Latitude
     IRS_LON = HALO_IRS_Data['IRS_LON'] # Longitude
@@ -251,7 +251,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     IRS_PHI = HALO_IRS_Data['IRS_PHI'] # Roll
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
-    UV_Wind_Data = xr.open_dataset(ERA5_UV_Wind_File)
+    UV_Wind_Data = xr.load_dataset(ERA5_UV_Wind_File)
     UV_Wind_time = UV_Wind_Data['valid_time']
     UV_Wind_lat = UV_Wind_Data['latitude']
     UV_Wind_lon = UV_Wind_Data['longitude']
@@ -260,7 +260,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     V_Wind = UV_Wind_Data['v']
     # check if DSM_file is provided
     if DSM_file != '':
-        DSM_Data = rxr.open_rasterio(DSM_file)
+        DSM_Data = rxr.open_rasterio(DSM_file).load()
     else:
         DSM_Data = None
 
