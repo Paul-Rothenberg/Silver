@@ -8,6 +8,7 @@ import mounttree as mnt
 from metpy.calc import pressure_to_height_std, height_to_pressure_std
 from metpy.units import units
 import scipy.interpolate as sci
+import multiprocessing as mp
 
 
 def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
@@ -19,6 +20,7 @@ def generate_pic_pair_vids(Velox_BT_File, vid_edge_trim):
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
     :return: List of paths from image pair videos
     """
+    print('Generating Videos ...')
     Path('vids_tmp').mkdir(exist_ok=True)
     pic_pair_vids_list = []
     velox_data = xr.open_dataset(Velox_BT_File)
@@ -62,6 +64,7 @@ def cloud_point_pixel_pairs(pic_pair_vids_list):
     :param pic_pair_vids_list: List of Paths from image pair videos
     :return: List of arrays containing the image point pairs in pixel units
     """
+    print('Calculating Pixel Pairs ...')
     pixel_pairs_list = []
     for pic_pair_vid in pic_pair_vids_list:
         cap = cv.VideoCapture(pic_pair_vid)
@@ -218,7 +221,7 @@ def cloud_point_filter(Pcs_storageN, ref_height, DSM_Data):
 
 
 def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
-                                 vid_edge_trim, ERA5_UV_Wind_File, DSM_file):
+                                 vid_edge_trim, ERA5_UV_Wind_File, DSM_file, process_number):
     """
     This function performs a stereographic reconstruction of cloud points based on the method presented by Kölling
     et al. (2019) and corrects the wind-cloud shift according to the technique of Volkmer et al. (2024).
@@ -232,9 +235,11 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
     :param ERA5_UV_Wind_File: Wind data file
     :param DSM_file: Digital surface model file
+    :param process_number: Maximum number of parallel processes
     :return: Nested list containing the times of reconstruction [0], the reference point positions of the stereo
              coordinate system [1] and the arrays of reconstructed cloud points [2]
     """
+    print('Reconstructing Cloud Points ...')
     # load the data files
     coordinate_systems = mnt.load_mounttree(MNT_File)
     Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
@@ -259,15 +264,16 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     else:
         DSM_Data = None
 
-    cloud_point_main_storage = [[],[],[]]
-    # perform reconstruction for every video
-    for vid in range(len(pic_pair_vids_list)):
+    # function to perform a reconstruction of a video
+    global vid_reconstruction
+    def vid_reconstruction(vid):
         vid_time = pic_pair_vids_list[vid][-33:-4]
+        print(vid_time)
         time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
         # reconstruction doesn't work if P1=P2
         if (IRS_LAT[time_index] == IRS_LAT[time_index+1] and IRS_LON[time_index] == IRS_LON[time_index+1] and
                 IRS_ALT[time_index] == IRS_ALT[time_index+1]):
-            continue
+            return None
         # calculate stereo reference system
         EARTH_frame = coordinate_systems.get_frame('EARTH')
         coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
@@ -284,12 +290,12 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
 
         # test if pixel pairs exist
         if np.shape(pixel_pairs_list[vid]) == ():
-            continue
+            return None
         # calculate view vectors of pixel pairs
         view_vectors = viewing_direction(pixel_pairs_list[vid], Velox_VDC_Data, vid_edge_trim)
         # test if usable view vectors have been calculated
         if view_vectors.shape == (0, 2, 3):
-            continue
+            return None
 
         # calculation of the aircraft positions and viewing directions in the stereo reference system
         coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
@@ -322,7 +328,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             VV_storage.append(vec_pair)
         VV = np.array(VV_storage)
         if len(Pcs_storage) == 0:
-            continue
+            return None
 
         # conversion of cloud points from the stereo reference system (S) to the Cartesian earth system (E) and then to
         # natural coordinates of the earth system (N)
@@ -337,7 +343,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             VV = np.delete(VV, filter_indices, axis=0)
             # test if there are still some cloud points after filtering
             if np.shape(Pcs_storageN) == (0, 3):
-                continue
+                return None
 
         # calculation of the time index in the ERA5 wind data and the position of the image pair in the time interval
         time_index = np.where(UV_Wind_time.astype(str) == vid_time[:-15]+'00:00.000000000')[0].item()
@@ -412,14 +418,17 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
                 Pcs_storageN = np.delete(Pcs_storageN, filter_indices, axis=0)
                 VV = np.delete(VV, filter_indices, axis=0)
                 if np.shape(Pcs_storageN) == (0, 3):
-                    break
-        # check that there are reconstructed cloud points
-        if np.shape(Pcs_storageN) == (0, 3):
-            continue
-        # saving data to main storage
-        cloud_point_main_storage[0].append(np.datetime64(vid_time)+np.timedelta64(500, 'ms'))
-        cloud_point_main_storage[1].append(PrefN)
-        cloud_point_main_storage[2].append(Pcs_storageN)
+                    return None
+        return [np.datetime64(vid_time)+np.timedelta64(500, 'ms'), PrefN, Pcs_storageN]
+
+    # reconstruct cloud points and saving data to main storage
+    cloud_point_main_storage = [[], [], []]
+    with mp.Pool(processes=process_number) as pool:
+        for vid_result in pool.map(vid_reconstruction, range(len(pic_pair_vids_list))):
+            if vid_result is not None:
+                cloud_point_main_storage[0].append(vid_result[0])
+                cloud_point_main_storage[1].append(vid_result[1])
+                cloud_point_main_storage[2].append(vid_result[2])
     return cloud_point_main_storage
 
 
@@ -435,6 +444,7 @@ def save_to_NetCDF(cloud_point_main_storage, Pcs_save_path):
     :param Pcs_save_path: Path to the location where the cloud points are stored in the form of a NetCDF file
     :return: Boolean whether cloud points could be saved
     """
+    print('Saving Data ...')
     if len(cloud_point_main_storage[0]) == 0:
         return False
     Nr = [len(Pcs) for Pcs in cloud_point_main_storage[2]]
@@ -470,4 +480,5 @@ def save_to_NetCDF(cloud_point_main_storage, Pcs_save_path):
                                    'reference system': 'WGS84'}
 
     DataNetCDF.to_netcdf(path=Pcs_save_path)
+    print('Done')
     return True
