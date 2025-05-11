@@ -252,12 +252,21 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
     UV_Wind_Data = xr.load_dataset(ERA5_UV_Wind_File)
-    UV_Wind_time = UV_Wind_Data['valid_time']
+    UV_Wind_Data = UV_Wind_Data.transpose('valid_time', 'latitude', 'longitude', 'pressure_level')
+    # in the case you are flying close to the antimeridian
+    if UV_Wind_Data['longitude'][0] == -180. and UV_Wind_Data['longitude'][-1] == 179.75:
+        UV_Wind_Data = (xr.concat((UV_Wind_Data, UV_Wind_Data.isel(longitude=0)), dim='longitude')
+                        .assign_coords({'longitude': UV_Wind_Data['longitude'].values.tolist()+[180.]}))
+    UV_Wind_time = np.int64(UV_Wind_Data['valid_time'])
     UV_Wind_lat = UV_Wind_Data['latitude']
     UV_Wind_lon = UV_Wind_Data['longitude']
     UV_Wind_pl = UV_Wind_Data['pressure_level']
+    UV_Wind_alt = pressure_to_height_std(UV_Wind_pl.values*units.hPa).to_base_units().magnitude
     U_Wind = UV_Wind_Data['u']
     V_Wind = UV_Wind_Data['v']
+    # preparation of wind interpolation
+    uRGI = sci.RegularGridInterpolator((UV_Wind_time, UV_Wind_lat, UV_Wind_lon, UV_Wind_alt), U_Wind)
+    vRGI = sci.RegularGridInterpolator((UV_Wind_time, UV_Wind_lat, UV_Wind_lon, UV_Wind_alt), V_Wind)
     # check if DSM_file is provided
     if DSM_file != '':
         DSM_Data = rxr.open_rasterio(DSM_file).load()
@@ -345,54 +354,20 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             if np.shape(Pcs_storageN) == (0, 3):
                 return None
 
-        # calculation of the time index in the ERA5 wind data and the position of the image pair in the time interval
-        time_index = np.where(UV_Wind_time.astype(str) == vid_time[:-15]+'00:00.000000000')[0].item()
-        time_position = int(vid_time[-15:-13])*60+float(vid_time[-12:])+0.5
         # iterative wind correction
+        time_position = np.int64(np.datetime64(vid_time, 'ns'))+5e8
         number_of_iterations = 5
         for iteration in range(number_of_iterations):
             PcsW_storage = []
             for PcsN, vec_pair in zip(Pcs_storageN, VV):
-                # indices of the surrounding wind data points
-                lat_index = np.where(UV_Wind_lat == np.floor(PcsN[0]*4)/4)[0].item()
-                lon_index = np.where(UV_Wind_lon == np.floor(PcsN[1]*4)/4)[0].item()
-                pl_height = height_to_pressure_std(PcsN[2]*units.meter).magnitude
-                pl_index = np.argmin(np.abs(UV_Wind_pl.values - pl_height))
-                if UV_Wind_pl[pl_index] < pl_height:
-                    pl_index -= 1
-
-                # selection of the wind field surrounding the cloud point
-                if np.floor(PcsN[1]*4)/4 == 179.75:
-                    # in the case you are flying close to the antimeridian
-                    lon180 = np.where(UV_Wind_lon == -180.)[0].item()
-                    u_wind_patch = xr.concat((U_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                             lat_index-1:lat_index+1, lon_index:lon_index+1],
-                                             U_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                             lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
-                    v_wind_patch = xr.concat((V_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                             lat_index-1:lat_index+1, lon_index:lon_index+1],
-                                             V_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                             lat_index-1:lat_index+1, lon180:lon180+1]), dim='longitude')
-                else:
-                    u_wind_patch = U_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                   lat_index-1:lat_index+1, lon_index:lon_index+2]
-                    v_wind_patch = V_Wind[time_index:time_index+2, pl_index:pl_index+2,
-                                   lat_index-1:lat_index+1, lon_index:lon_index+2]
-
-                # converting pressure altitude to metric altitude
-                alt_height = (pressure_to_height_std(u_wind_patch['pressure_level'].values*units.hPa)
-                              .to_base_units().magnitude)
-
-                # interpolation of the wind vector
+                # Interpolation of the wind vector:
                 # A rectilinear grid is assumed for the interpolation. The earth does not quite fulfill this condition
-                # due to its ellipsoidal shape. However, the differences for the patch area are usually quite small.
+                # due to its ellipsoidal shape. However, the difference for the grid resolution is usually quite small.
                 # Since the wind field also follows the curvature of the earth, the interpolated values are likely to be
                 # more accurate than when converting and interpolating in a Cartesian coordinate system.
-                interpolation_point = np.append(time_position, list(PcsN)[-1:]+list(PcsN)[:-1])
-                u_wind = sci.RegularGridInterpolator(([0, 3600], alt_height, u_wind_patch['latitude'],
-                                                      u_wind_patch['longitude']), u_wind_patch)(interpolation_point)
-                v_wind = sci.RegularGridInterpolator(([0, 3600], alt_height, v_wind_patch['latitude'],
-                                                      v_wind_patch['longitude']), v_wind_patch)(interpolation_point)
+                interpolation_point = np.append(time_position, PcsN)
+                u_wind = uRGI(interpolation_point)
+                v_wind = vRGI(interpolation_point)
                 wind_vector = np.array([v_wind.item(), u_wind.item(), 0])
 
                 # point reconstruction with wind correction
