@@ -118,8 +118,8 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     point does not lie directly on a pixel. In the next step, the viewing direction vector is calculated from the zenith
     and azimuth angle found. If there are no four surrounding pixels during the interpolation, a None vector is added.
     This is only the case if the point lies between the center of an edge pixel and the absolute edge of the image and
-    the trim of this side is zero. If the translated array contains None vectors, the entire pixel point pair is deleted
-    and only valid vectors are returned.
+    the trim of this side is zero. If the translated array contains None vectors, the corresponding vector pairs are
+    deleted so that only valid vectors pairs are returned.
 
     :param pixel_pairs: Array containing the pixel point pairs of consecutive images
     :param Velox_VDC_Data: Velox calibration file which assigns a viewing direction to each pixel in the camera
@@ -127,7 +127,7 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
     :param vid_edge_trim: List specifying how the brightness temperature data set was trimmed in respect to the raw data
     :return: Array which contains the translated viewing vectors in the camera reference frame
     """
-    # trimming the calibration data set to the video size
+    # adapting the calibration data set to the video size
     real_vid_edge_trim = [vid_edge_trim[0]+(vid_edge_trim[0]<vid_edge_trim[2] and sum(vid_edge_trim[0::2])%2!=0),
                           vid_edge_trim[1]+(vid_edge_trim[1]<vid_edge_trim[3] and sum(vid_edge_trim[1::2])%2!=0),
                           vid_edge_trim[2]+(vid_edge_trim[2]<vid_edge_trim[0] and sum(vid_edge_trim[0::2])%2!=0),
@@ -163,7 +163,6 @@ def viewing_direction(pixel_pairs, Velox_VDC_Data, vid_edge_trim):
             px_y_coords = z_patch['y-pixel']
             z_patch = z_patch.values*np.pi/180
             a_patch = a_patch.values*np.pi/180
-            # circularity consideration of the zenith angle data not necessary since the breakpoint is behind the camera
             z = sci.RegularGridInterpolator((px_x_coords, px_y_coords), z_patch)(pixel).item()
             # circularity consideration of the azimuth angle data
             a_sin = sci.RegularGridInterpolator((px_x_coords, px_y_coords), np.sin(a_patch))(pixel)
@@ -221,7 +220,7 @@ def cloud_point_filter(Pcs_storageN, ref_height, DSM_Data):
 
 
 def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC_File, HALO_IRS_File, MNT_File,
-                                 vid_edge_trim, ERA5_UV_Wind_File, DSM_file, process_number):
+                                 vid_edge_trim, ERA5_UV_Wind_File, DSM_file, process_number, low_RAM):
     """
     This function performs a stereographic reconstruction of cloud points based on the method presented by Kölling
     et al. (2019) and corrects the wind-cloud shift according to the technique of Volkmer et al. (2024).
@@ -236,22 +235,28 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     :param ERA5_UV_Wind_File: Wind data file
     :param DSM_file: Digital surface model file
     :param process_number: Maximum number of parallel processes
+    :param low_RAM: Boolean whether RAM should be saved at the expense of computation time
     :return: Nested list containing the times of reconstruction [0], the reference point positions of the stereo
              coordinate system [1] and the arrays of reconstructed cloud points [2]
     """
     print('Reconstructing Cloud Points ...')
     # load the data files
     coordinate_systems = mnt.load_mounttree(MNT_File)
-    Velox_VDC_Data = xr.load_dataset(Velox_VDC_File)
-    HALO_IRS_Data = xr.load_dataset(HALO_IRS_File)
-    IRS_TIME = HALO_IRS_Data['time']   # time
+    if low_RAM:
+        Velox_VDC_Data = xr.open_dataset(Velox_VDC_File)
+        HALO_IRS_Data = xr.open_dataset(HALO_IRS_File)
+        UV_Wind_Data = xr.open_dataset(ERA5_UV_Wind_File)
+    else:
+        Velox_VDC_Data = xr.load_dataset(Velox_VDC_File)
+        HALO_IRS_Data = xr.load_dataset(HALO_IRS_File)
+        UV_Wind_Data = xr.load_dataset(ERA5_UV_Wind_File)
+    IRS_TIME = HALO_IRS_Data['TIME']   # Time
     IRS_LAT = HALO_IRS_Data['IRS_LAT'] # Latitude
     IRS_LON = HALO_IRS_Data['IRS_LON'] # Longitude
     IRS_ALT = HALO_IRS_Data['IRS_ALT'] # Altitude
     IRS_PHI = HALO_IRS_Data['IRS_PHI'] # Roll
     IRS_THE = HALO_IRS_Data['IRS_THE'] # Pitch
     IRS_HDG = HALO_IRS_Data['IRS_HDG'] # Yaw
-    UV_Wind_Data = xr.load_dataset(ERA5_UV_Wind_File)
     UV_Wind_Data = UV_Wind_Data.transpose('valid_time', 'latitude', 'longitude', 'pressure_level')
     # in the case you are flying close to the antimeridian
     if UV_Wind_Data['longitude'][0] == -180. and UV_Wind_Data['longitude'][-1] == 179.75:
@@ -269,7 +274,10 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     vRGI = sci.RegularGridInterpolator((UV_Wind_time, UV_Wind_lat, UV_Wind_lon, UV_Wind_alt), V_Wind)
     # check if DSM_file is provided
     if DSM_file != '':
-        DSM_Data = rxr.open_rasterio(DSM_file).load()
+        if low_RAM:
+            DSM_Data = rxr.open_rasterio(DSM_file)
+        else:
+            DSM_Data = rxr.open_rasterio(DSM_file).load()
     else:
         DSM_Data = None
 
@@ -278,19 +286,20 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
     def vid_reconstruction(vid):
         vid_time = pic_pair_vids_list[vid][-33:-4]
         print(vid_time)
-        time_index = np.where(IRS_TIME.astype(str) == vid_time)[0].item()
+        time_index1 = np.where(IRS_TIME == np.datetime64(vid_time, 'ns'))[0].item()
+        time_index2 = np.where(IRS_TIME == np.datetime64(vid_time, 'ns')+np.timedelta64(1, 's'))[0].item()
         # reconstruction doesn't work if P1=P2
-        if (IRS_LAT[time_index] == IRS_LAT[time_index+1] and IRS_LON[time_index] == IRS_LON[time_index+1] and
-                IRS_ALT[time_index] == IRS_ALT[time_index+1]):
+        if (IRS_LAT[time_index1] == IRS_LAT[time_index2] and IRS_LON[time_index1] == IRS_LON[time_index2] and
+                IRS_ALT[time_index1] == IRS_ALT[time_index2]):
             return None
         # calculate stereo reference system
         EARTH_frame = coordinate_systems.get_frame('EARTH')
-        coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
-                                  roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index])
+        coordinate_systems.update(lat=IRS_LAT[time_index1], lon=IRS_LON[time_index1], height=IRS_ALT[time_index1],
+                                  roll=IRS_PHI[time_index1], pitch=IRS_THE[time_index1], yaw=IRS_HDG[time_index1])
         VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
         P1E = VE_transformation.apply_point(0, 0, 0)
-        coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
-                                  roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
+        coordinate_systems.update(lat=IRS_LAT[time_index2], lon=IRS_LON[time_index2], height=IRS_ALT[time_index2],
+                                  roll=IRS_PHI[time_index2], pitch=IRS_THE[time_index2], yaw=IRS_HDG[time_index2])
         VE_transformation = coordinate_systems.get_transformation('VELOX', 'EARTH')
         P2E = VE_transformation.apply_point(0, 0, 0)
         PrefE = [(a+b)/2 for a, b in zip(P1E, P2E)]
@@ -307,15 +316,15 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
             return None
 
         # calculation of the aircraft positions and viewing directions in the stereo reference system
-        coordinate_systems.update(lat=IRS_LAT[time_index], lon=IRS_LON[time_index], height=IRS_ALT[time_index],
-                                  roll=IRS_PHI[time_index], pitch=IRS_THE[time_index], yaw=IRS_HDG[time_index],
+        coordinate_systems.update(lat=IRS_LAT[time_index1], lon=IRS_LON[time_index1], height=IRS_ALT[time_index1],
+                                  roll=IRS_PHI[time_index1], pitch=IRS_THE[time_index1], yaw=IRS_HDG[time_index1],
                                   ref_lat=ref_lat, ref_lon=ref_lon, ref_height=ref_height)
         VS_transformation = coordinate_systems.get_transformation('VELOX', 'STEREO')
         P1 = np.array(VS_transformation.apply_point(0, 0, 0))
         VV1 = np.stack(VS_transformation.apply_direction(*view_vectors[:,0,:].T)).T
 
-        coordinate_systems.update(lat=IRS_LAT[time_index+1], lon=IRS_LON[time_index+1], height=IRS_ALT[time_index+1],
-                                  roll=IRS_PHI[time_index+1], pitch=IRS_THE[time_index+1], yaw=IRS_HDG[time_index+1])
+        coordinate_systems.update(lat=IRS_LAT[time_index2], lon=IRS_LON[time_index2], height=IRS_ALT[time_index2],
+                                  roll=IRS_PHI[time_index2], pitch=IRS_THE[time_index2], yaw=IRS_HDG[time_index2])
         VS_transformation = coordinate_systems.get_transformation('VELOX', 'STEREO')
         P2 = np.array(VS_transformation.apply_point(0, 0, 0))
         VV2 = np.stack(VS_transformation.apply_direction(*view_vectors[:, 1, :].T)).T
@@ -394,7 +403,7 @@ def stereographic_reconstruction(pic_pair_vids_list, pixel_pairs_list, Velox_VDC
                 VV = np.delete(VV, filter_indices, axis=0)
                 if np.shape(Pcs_storageN) == (0, 3):
                     return None
-        return [np.datetime64(vid_time)+np.timedelta64(500, 'ms'), PrefN, Pcs_storageN]
+        return [np.datetime64(vid_time, 'ns')+np.timedelta64(500, 'ms'), PrefN, Pcs_storageN]
 
     # reconstruct cloud points and saving data to main storage
     cloud_point_main_storage = [[], [], []]
